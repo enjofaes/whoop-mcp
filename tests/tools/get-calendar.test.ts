@@ -560,5 +560,19 @@ describe("getCalendar", () => {
       }
       spy.mockRestore();
     });
+
+    it("clamps days above the 90-day maximum instead of failing", async () => {
+      const spy = vi.spyOn(pagination, "fetchAllPages").mockResolvedValue({
+        records: [],
+        truncated: false,
+      });
+      const client = { get: vi.fn() } as unknown as WhoopClient;
+
+      const result = await getCalendar(client, { days: 365 });
+
+      // Grid is capped at 90 days rather than throwing on the out-of-range input.
+      expect(result.period.days).toBe(90);
+      spy.mockRestore();
+    });
   });
 });

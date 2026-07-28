@@ -404,10 +404,11 @@ export function createWhoopServer(client: WhoopClient, options?: CreateServerOpt
         days: z
           .number()
           .int()
-          .min(1)
-          .max(90)
+          .positive()
           .optional()
-          .describe("Number of days to show. Default: 7. Max: 90."),
+          .describe(
+            "Number of days to show. Default: 7. Values above 90 are capped to 90."
+          ),
         start: z
           .string()
           .optional()

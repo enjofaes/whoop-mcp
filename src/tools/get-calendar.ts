@@ -47,6 +47,8 @@ export interface CalendarParams {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_DAYS = 7;
+/** Upper bound on the calendar grid. Larger requests are clamped, not rejected. */
+const MAX_DAYS = 90;
 const MILLI_PER_HOUR = 1000 * 60 * 60;
 
 // ---------------------------------------------------------------------------
@@ -98,7 +100,10 @@ export async function getCalendar(
   client: WhoopClient,
   params: CalendarParams
 ): Promise<CalendarGrid> {
-  const numDays = params.days ?? DEFAULT_DAYS;
+  // Clamp into [1, MAX_DAYS] rather than rejecting out-of-range requests, so a
+  // caller asking for more than the grid supports still gets a valid response.
+  const requestedDays = params.days ?? DEFAULT_DAYS;
+  const numDays = Math.min(Math.max(Math.trunc(requestedDays), 1), MAX_DAYS);
   const now = new Date();
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
