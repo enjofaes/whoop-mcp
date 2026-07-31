@@ -29,6 +29,9 @@ const mockSaveTokens = vi.fn();
 vi.mock("../src/auth/token-store.js", () => ({
   loadTokens: (...args: unknown[]) => mockLoadTokens(...args),
   saveTokens: (...args: unknown[]) => mockSaveTokens(...args),
+  // Mirror the real 60s-buffer expiry check so refresh-path tests (which store
+  // already-expired tokens) still exercise the refresh branch.
+  isTokenExpired: (tokens: { expires_at: number }) => tokens.expires_at <= Date.now() + 60_000,
 }));
 
 const mockCreateWhoopClient = vi.fn();
@@ -326,6 +329,84 @@ describe("main() entry point", () => {
       await clientOptions.onTokenRefresh();
 
       expect(clearSpy).toHaveBeenCalledOnce();
+    });
+
+    it("reuses a still-fresh stored token without refreshing (peer already rotated)", async () => {
+      setupHappyPath();
+
+      // A peer process refreshed the file already: token is not expired.
+      mockLoadTokens.mockResolvedValue({
+        access_token: "peer-refreshed-access",
+        refresh_token: "peer-refresh-token",
+        expires_at: Date.now() + 3_600_000,
+        token_type: "Bearer",
+      });
+
+      const { main } = await importMain();
+      await main();
+
+      const clientOptions = mockCreateWhoopClient.mock.calls[0][0] as {
+        onTokenRefresh: () => Promise<string>;
+      };
+      const token = await clientOptions.onTokenRefresh();
+
+      // No refresh call, no rotation, no save — just reuse.
+      expect(mockRefreshAccessToken).not.toHaveBeenCalled();
+      expect(mockSaveTokens).not.toHaveBeenCalled();
+      expect(token).toBe("peer-refreshed-access");
+    });
+
+    it("recovers a peer's fresh token when its own refresh loses the rotation race", async () => {
+      setupHappyPath();
+
+      const expired = {
+        access_token: "old-access",
+        refresh_token: "stale-refresh-token",
+        expires_at: Date.now() - 1000,
+        token_type: "Bearer",
+      };
+      const peerFresh = {
+        access_token: "peer-won-access",
+        refresh_token: "peer-refresh-token",
+        expires_at: Date.now() + 3_600_000,
+        token_type: "Bearer",
+      };
+      // First load (expired) → refresh rejected (peer already consumed it) →
+      // second load returns the peer's fresh token.
+      mockLoadTokens.mockResolvedValueOnce(expired).mockResolvedValueOnce(peerFresh);
+      mockRefreshAccessToken.mockRejectedValue(new Error("Token refresh failed (401): invalid_grant"));
+
+      const { main } = await importMain();
+      await main();
+
+      const clientOptions = mockCreateWhoopClient.mock.calls[0][0] as {
+        onTokenRefresh: () => Promise<string>;
+      };
+      const token = await clientOptions.onTokenRefresh();
+
+      expect(token).toBe("peer-won-access");
+    });
+
+    it("rethrows when refresh fails and no fresher token is available", async () => {
+      setupHappyPath();
+
+      const expired = {
+        access_token: "old-access",
+        refresh_token: "stale-refresh-token",
+        expires_at: Date.now() - 1000,
+        token_type: "Bearer",
+      };
+      // Both loads return the same expired token; refresh keeps failing.
+      mockLoadTokens.mockResolvedValue(expired);
+      mockRefreshAccessToken.mockRejectedValue(new Error("Token refresh failed (401): invalid_grant"));
+
+      const { main } = await importMain();
+      await main();
+
+      const clientOptions = mockCreateWhoopClient.mock.calls[0][0] as {
+        onTokenRefresh: () => Promise<string>;
+      };
+      await expect(clientOptions.onTokenRefresh()).rejects.toThrow(/invalid_grant/);
     });
   });
 

@@ -18,7 +18,7 @@
 
 import { authenticate, refreshAccessToken, toOAuthTokens } from "./auth/oauth.js";
 import type { OAuthConfig } from "./auth/oauth.js";
-import { loadTokens, saveTokens } from "./auth/token-store.js";
+import { loadTokens, saveTokens, isTokenExpired } from "./auth/token-store.js";
 import { createWhoopClient } from "./api/client.js";
 import { MemoryCache } from "./cache/memory-cache.js";
 import { createWhoopServer } from "./server.js";
@@ -131,14 +131,41 @@ export async function main(): Promise<void> {
       );
     }
 
-    const refreshed = await refreshAccessToken(tokens.refresh_token, oauthConfig);
-    const newTokens = toOAuthTokens(refreshed, tokens.refresh_token);
-    await saveTokens(newTokens);
+    // A peer process (another server instance sharing the token file) may have
+    // refreshed already. WHOOP rotates refresh tokens on every use, so blindly
+    // refreshing here would consume a token that peer already invalidated. If
+    // the file now holds an unexpired access token, reuse it — no refresh, no
+    // rotation, no contention.
+    if (!isTokenExpired(tokens)) {
+      cache.clear();
+      logger.info("whoop token already fresh in store, reusing");
+      return tokens.access_token;
+    }
 
-    cache.clear();
-    logger.info("whoop token refreshed");
+    try {
+      const refreshed = await refreshAccessToken(tokens.refresh_token, oauthConfig);
+      const newTokens = toOAuthTokens(refreshed, tokens.refresh_token);
+      await saveTokens(newTokens);
 
-    return newTokens.access_token;
+      cache.clear();
+      logger.info("whoop token refreshed");
+
+      return newTokens.access_token;
+    } catch (error: unknown) {
+      // The refresh token was likely rotated out from under us by a peer between
+      // our load and our refresh. Re-read the file once: if the peer wrote a
+      // fresh token, recover with it instead of failing the call.
+      const latest = await loadTokens();
+      if (latest && !isTokenExpired(latest)) {
+        cache.clear();
+        logger.info("whoop token refresh raced; recovered fresher token from store");
+        return latest.access_token;
+      }
+      logger.error("whoop token refresh failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   };
 
   const client = createWhoopClient({ accessToken, onTokenRefresh, logger, cache });

@@ -168,6 +168,11 @@ export function createWhoopClient(options: WhoopClientOptions): WhoopClient {
   const requestId = options.requestId;
   const cache = options.cache;
 
+  // Shared across all requests so a successful refresh persists: without this,
+  // every call would restart from the original (now-stale) token, 401, and
+  // refresh again — thrashing the refresh token on every request.
+  let currentAccessToken = options.accessToken;
+
   function logExtras(extra: Record<string, unknown>): Record<string, unknown> {
     return requestId !== undefined ? { requestId, ...extra } : extra;
   }
@@ -233,7 +238,6 @@ export function createWhoopClient(options: WhoopClientOptions): WhoopClient {
 
   async function doGet<T>(path: string): Promise<T> {
     const url = `${baseUrl}${path}`;
-    let currentToken = options.accessToken;
     let lastError: WhoopApiError | undefined;
     let lastResponse: Response | undefined;
 
@@ -245,7 +249,7 @@ export function createWhoopClient(options: WhoopClientOptions): WhoopClient {
         await delay(retryDelay);
       }
 
-      const response = await doFetch(url, currentToken);
+      const response = await doFetch(url, currentAccessToken);
 
       if (response.ok) {
         return (await response.json()) as T;
@@ -276,8 +280,9 @@ export function createWhoopClient(options: WhoopClientOptions): WhoopClient {
           throw new WhoopAuthError(refreshError);
         }
 
-        // Retry with the new token
-        currentToken = newToken;
+        // Persist the refreshed token so subsequent requests reuse it instead
+        // of restarting from the stale one and refreshing all over again.
+        currentAccessToken = newToken;
         const retryResponse = await doFetch(url, newToken);
         if (retryResponse.ok) {
           return (await retryResponse.json()) as T;
