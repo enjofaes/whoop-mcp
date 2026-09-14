@@ -32,6 +32,13 @@ export interface OAuthConfig {
   tokenDir?: string;
   /** Callback server port. Default: 3000 */
   port?: number;
+  /**
+   * Refuse to fall back to the browser-based OAuth flow. Set for headless
+   * deployments (containers, remote hosts) where no browser can ever complete
+   * the handshake — better to fail loudly than hang on a callback that will
+   * never arrive.
+   */
+  nonInteractive?: boolean;
 }
 
 /** Raw token response from the WHOOP token endpoint */
@@ -278,13 +285,26 @@ export async function authenticate(config: OAuthConfig): Promise<string> {
       }
       // Log the refresh failure so it's diagnosable, then fall through to full OAuth flow
       const message = error instanceof Error ? error.message : "unknown error";
-      console.error(`Token refresh failed, starting full OAuth flow: ${message}`);
+      console.error(
+        config.nonInteractive
+          ? `Token refresh failed: ${message}`
+          : `Token refresh failed, starting full OAuth flow: ${message}`
+      );
     }
   } else {
     console.error("No cached tokens found, starting OAuth flow...");
   }
 
-  // 3. Full OAuth flow
+  // 3. Full OAuth flow — unavailable when running headless
+  if (config.nonInteractive) {
+    throw new Error(
+      "Cannot authenticate with WHOOP: no usable cached tokens and the browser " +
+        "OAuth flow is disabled (nonInteractive). Supply a valid WHOOP_REFRESH_TOKEN, " +
+        "or mount a ~/.whoop-mcp/tokens.json produced by running this server " +
+        "interactively once."
+    );
+  }
+
   return performOAuthFlow(config);
 }
 

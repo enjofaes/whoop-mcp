@@ -656,6 +656,52 @@ describe("authenticate", () => {
     vi.restoreAllMocks();
   });
 
+  it("throws instead of opening a browser when nonInteractive and no tokens exist", async () => {
+    mockLoadTokens.mockResolvedValueOnce(null);
+
+    await expect(
+      authenticate({ ...TEST_CONFIG, nonInteractive: true })
+    ).rejects.toThrow(/browser OAuth flow is disabled/);
+
+    expect(mockStartCallbackServer).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it("throws instead of opening a browser when nonInteractive and the refresh fails", async () => {
+    const expiredTokens: OAuthTokens = { ...VALID_TOKENS, expires_at: Date.now() - 1000 };
+    mockLoadTokens.mockResolvedValueOnce(expiredTokens);
+    mockIsTokenExpired.mockReturnValueOnce(true);
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      text: () => Promise.resolve("forbidden"),
+    });
+
+    await expect(
+      authenticate({ ...TEST_CONFIG, nonInteractive: true })
+    ).rejects.toThrow(/browser OAuth flow is disabled/);
+
+    expect(mockStartCallbackServer).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it("still falls back to the browser flow when nonInteractive is not set", async () => {
+    mockLoadTokens.mockResolvedValueOnce(null);
+    mockStartCallbackServer.mockReturnValueOnce({
+      port: 3000,
+      result: Promise.resolve({ code: "auth-code", state: "mock-state" }),
+    });
+    mockSaveTokens.mockResolvedValueOnce(undefined);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(MOCK_TOKEN_RESPONSE),
+    });
+
+    await authenticate(TEST_CONFIG);
+
+    expect(mockStartCallbackServer).toHaveBeenCalled();
+  });
+
   it("returns existing access_token if tokens are valid (not expired)", async () => {
     mockLoadTokens.mockResolvedValueOnce(VALID_TOKENS);
     mockIsTokenExpired.mockReturnValueOnce(false);
