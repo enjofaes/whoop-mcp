@@ -110,7 +110,38 @@ export async function main(): Promise<void> {
   // 2. Read WHOOP OAuth credentials (always required)
   const clientId = getRequiredEnv("WHOOP_CLIENT_ID");
   const clientSecret = getRequiredEnv("WHOOP_CLIENT_SECRET");
-  const oauthConfig: OAuthConfig = { clientId, clientSecret };
+  // A browser flow can never complete on a remote host, and WHOOP_REFRESH_TOKEN
+  // signals an unattended deployment. In either case fail fast rather than
+  // block forever on a callback nobody can answer.
+  const nonInteractive =
+    process.env.WHOOP_NON_INTERACTIVE === "1" ||
+    Boolean(process.env.WHOOP_REFRESH_TOKEN) ||
+    transportMode === "http";
+  const oauthConfig: OAuthConfig = { clientId, clientSecret, nonInteractive };
+
+  // 2b. Headless bootstrap. A container has no browser to run the interactive
+  // OAuth flow, so seed the token store from WHOOP_REFRESH_TOKEN when nothing
+  // is cached yet. The seed is written as already-expired, which sends
+  // authenticate() down its refresh path instead of opening a browser; the
+  // refreshed pair is then persisted normally. Ignored when tokens already
+  // exist, so a mounted volume always wins over the env var.
+  const seedRefreshToken = process.env.WHOOP_REFRESH_TOKEN;
+  if (seedRefreshToken) {
+    if (await loadTokens()) {
+      logger.info("WHOOP_REFRESH_TOKEN ignored — stored tokens already present");
+    } else {
+      await saveTokens({
+        // Placeholder: the store rejects an empty access_token, and expires_at
+        // of 0 means this value is never sent anywhere — it is replaced by the
+        // refresh before the first API call.
+        access_token: "seeded-pending-refresh",
+        refresh_token: seedRefreshToken,
+        expires_at: 0,
+        token_type: "Bearer",
+      });
+      logger.info("seeded token store from WHOOP_REFRESH_TOKEN");
+    }
+  }
 
   // 3. Authenticate with WHOOP — uses cached tokens, refreshes, or runs full flow
   console.error("Authenticating with WHOOP...");
