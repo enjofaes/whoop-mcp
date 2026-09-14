@@ -13,7 +13,7 @@
 # Change `app` and PUBLIC_URL together — they must agree, or the OAuth
 # connector will advertise an issuer claude.ai cannot reach.
 
-app            = "whoop-mcp-CHANGE-ME"
+app            = "whoop-mcp-enjofaes"
 primary_region = "ams"
 
 [build]
@@ -26,7 +26,7 @@ primary_region = "ams"
   MCP_TRUST_PROXY       = "1"
   LOG_FORMAT            = "json"
   ALLOWED_REDIRECT_URIS = "https://claude.ai/api/mcp/auth_callback"
-  PUBLIC_URL            = "https://whoop-mcp-CHANGE-ME.fly.dev"
+  PUBLIC_URL            = "https://whoop-mcp-enjofaes.fly.dev"
 
 [http_service]
   internal_port        = 3000
