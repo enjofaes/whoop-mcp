@@ -7,6 +7,8 @@
   once a minute.
 
   Usage:  .\scripts\verify-connector.ps1 -Password 'abc123...'
+
+  ASCII only on purpose - see the note in new-connector-password.ps1.
 #>
 
 param(
@@ -23,12 +25,14 @@ $body = @{
   code_challenge_method = "S256"
 }
 
-$code = 0; $content = ""
+$code = 0
+$content = ""
 try {
   $r = Invoke-WebRequest -Uri "$AppUrl/authorize" -Method POST -Body $body `
         -ContentType "application/x-www-form-urlencoded" `
         -MaximumRedirection 0 -ErrorAction Stop
-  $code = [int]$r.StatusCode; $content = $r.Content
+  $code = [int]$r.StatusCode
+  $content = $r.Content
 } catch {
   if ($_.Exception.Response) {
     $code = [int]$_.Exception.Response.StatusCode
@@ -37,7 +41,10 @@ try {
       $content = $sr.ReadToEnd()
     } catch { }
   } else {
-    Write-Host "`n  Could not reach $AppUrl — $($_.Exception.Message)`n" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Could not reach $AppUrl" -ForegroundColor Red
+    Write-Host "  $($_.Exception.Message)"
+    Write-Host ""
     exit 1
   }
 }
@@ -46,17 +53,17 @@ Write-Host ""
 if ($code -eq 401 -and $content -match "Incorrect password") {
   Write-Host "  WRONG PASSWORD" -ForegroundColor Red
   Write-Host "  The server rejected it. What is deployed differs from what you typed."
-  Write-Host "  Reset it with .\scripts\new-connector-password.ps1, then re-run both workflows."
+  Write-Host "  Reset with .\scripts\new-connector-password.ps1, then re-run both workflows."
 } elseif ($code -eq 429) {
   Write-Host "  RATE LIMITED" -ForegroundColor Yellow
-  Write-Host "  /authorize allows 3 requests a minute, and a browser attempt costs 2."
-  Write-Host "  This was never a password problem. Wait 60 seconds and try the connector again."
+  Write-Host "  /authorize allows 3 requests a minute and a browser attempt costs 2."
+  Write-Host "  This was never a password problem. Wait 60 seconds, then retry the connector."
 } elseif ($code -eq 401) {
-  Write-Host "  401, but not the password page (HTTP $code)." -ForegroundColor Yellow
-  Write-Host "  Check the app URL is right."
+  Write-Host "  401, but not the password page." -ForegroundColor Yellow
+  Write-Host "  Check the app URL is correct."
 } else {
   Write-Host "  PASSWORD ACCEPTED (HTTP $code)" -ForegroundColor Green
   Write-Host "  The server took it and moved on to the OAuth step, so the password is"
-  Write-Host "  correct and the problem is elsewhere in the claude.ai connector flow."
+  Write-Host "  correct and the fault is elsewhere in the claude.ai connector flow."
 }
 Write-Host ""
