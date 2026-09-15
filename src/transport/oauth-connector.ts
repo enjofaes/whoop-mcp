@@ -427,14 +427,38 @@ function renderPasswordPage(params: Record<string, string>, error?: string): str
 </html>`;
 }
 
+/**
+ * Origins that a successful password submission may end up at, for the CSP's
+ * `form-action`.
+ *
+ * Browsers apply `form-action` to every hop of a form submission, redirects
+ * included. A correct authorization ends in a 302 to the OAuth client's
+ * redirect URI, so `'self'` alone makes the flow impossible to complete in
+ * Chrome: the POST is blocked outright and reported against the form action.
+ * Each allowed redirect URI's origin therefore has to be listed too.
+ */
+function formActionSources(allowedRedirectUris: readonly string[]): string {
+  const origins = new Set<string>();
+  for (const uri of allowedRedirectUris) {
+    try {
+      origins.add(new URL(uri).origin);
+    } catch {
+      // Not parseable — createOAuthApp already validates these, so skip it
+      // rather than widening the policy on a malformed entry.
+    }
+  }
+  return ["'self'", ...origins].join(" ");
+}
+
 /** Apply anti-clickjacking + tight CSP headers to the password-prompt response. */
-function applyAuthorizePageHeaders(res: Response): void {
+function applyAuthorizePageHeaders(res: Response, formAction: string): void {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; ` +
+      "frame-ancestors 'none'; base-uri 'none'"
   );
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -497,6 +521,8 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
       scopes: options.scopes,
     });
 
+  const formAction = formActionSources(options.allowedRedirectUris);
+
   const app = express();
   app.disable("x-powered-by");
   if (options.trustProxy !== undefined) {
@@ -527,7 +553,7 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
       const v = req.query[k];
       if (typeof v === "string") params[k] = v;
     }
-    applyAuthorizePageHeaders(res);
+    applyAuthorizePageHeaders(res, formAction);
     res.status(200).send(renderPasswordPage(params));
   });
 
@@ -546,7 +572,7 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
           const v = body[k];
           if (typeof v === "string") params[k] = v;
         }
-        applyAuthorizePageHeaders(res);
+        applyAuthorizePageHeaders(res, formAction);
         res.status(401).send(renderPasswordPage(params, "Incorrect password. Try again."));
         return;
       }
