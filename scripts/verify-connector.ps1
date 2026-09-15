@@ -8,6 +8,11 @@
 
   Usage:  .\scripts\verify-connector.ps1 -Password 'abc123...'
 
+  Uses curl.exe rather than Invoke-WebRequest. Windows PowerShell 5.1 parses
+  HTML responses with the Internet Explorer engine unless -UseBasicParsing is
+  passed, which throws a security prompt and then an exception carrying no
+  response object - so a perfectly healthy server looks unreachable.
+
   ASCII only on purpose - see the note in new-connector-password.ps1.
 #>
 
@@ -16,41 +21,35 @@ param(
   [string] $AppUrl = "https://whoop-mcp-enjofaes.fly.dev"
 )
 
-$body = @{
-  connector_password    = $Password
-  client_id             = "whoop-mcp-connector"
-  response_type         = "code"
-  redirect_uri          = "https://claude.ai/api/mcp/auth_callback"
-  code_challenge        = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-  code_challenge_method = "S256"
+if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
+  Write-Host ""
+  Write-Host "  curl.exe not found. It ships with Windows 10 1803 and later." -ForegroundColor Red
+  Write-Host ""
+  exit 1
 }
 
-$code = 0
+$tmp = [IO.Path]::GetTempFileName()
+$status = & curl.exe -s -o $tmp -w "%{http_code}" --max-time 30 -X POST "$AppUrl/authorize" `
+  --data-urlencode "connector_password=$Password" `
+  --data-urlencode "redirect_uri=https://claude.ai/api/mcp/auth_callback" `
+  --data "client_id=whoop-mcp-connector" `
+  --data "response_type=code" `
+  --data "code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" `
+  --data "code_challenge_method=S256"
+
 $content = ""
-try {
-  $r = Invoke-WebRequest -Uri "$AppUrl/authorize" -Method POST -Body $body `
-        -ContentType "application/x-www-form-urlencoded" `
-        -MaximumRedirection 0 -ErrorAction Stop
-  $code = [int]$r.StatusCode
-  $content = $r.Content
-} catch {
-  if ($_.Exception.Response) {
-    $code = [int]$_.Exception.Response.StatusCode
-    try {
-      $sr = New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())
-      $content = $sr.ReadToEnd()
-    } catch { }
-  } else {
-    Write-Host ""
-    Write-Host "  Could not reach $AppUrl" -ForegroundColor Red
-    Write-Host "  $($_.Exception.Message)"
-    Write-Host ""
-    exit 1
-  }
+if (Test-Path $tmp) {
+  $content = Get-Content $tmp -Raw -ErrorAction SilentlyContinue
+  Remove-Item $tmp -ErrorAction SilentlyContinue
 }
+$code = 0
+[int]::TryParse($status, [ref]$code) | Out-Null
 
 Write-Host ""
-if ($code -eq 401 -and $content -match "Incorrect password") {
+if ($code -eq 0) {
+  Write-Host "  COULD NOT REACH $AppUrl" -ForegroundColor Red
+  Write-Host "  curl returned no status. Check the URL, or the machine may be asleep."
+} elseif ($code -eq 401 -and $content -match "Incorrect password") {
   Write-Host "  WRONG PASSWORD" -ForegroundColor Red
   Write-Host "  The server rejected it. What is deployed differs from what you typed."
   Write-Host "  Reset with .\scripts\new-connector-password.ps1, then re-run both workflows."
