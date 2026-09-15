@@ -532,10 +532,30 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
   // Body parser for the password form (also used downstream by SDK)
   const formParser = express.urlencoded({ extended: false });
 
-  // Per-endpoint rate limits (override the SDK's built-in rate limiting)
-  const authorizeLimiter = rateLimit({
+  // Per-endpoint rate limits (override the SDK's built-in rate limiting).
+  //
+  // GET and POST /authorize are limited separately. A single honest
+  // authorization costs one GET (render the password prompt) and one POST
+  // (submit it), so a shared budget small enough to stop password guessing is
+  // also small enough to break the normal flow on the user's second attempt —
+  // the client reports that 429 as a failed authorization, with nothing to
+  // suggest the request was merely throttled.
+  //
+  // Rendering the prompt discloses nothing and changes no state, so it gets a
+  // generous budget. The password check is the only thing worth throttling,
+  // and `skipSuccessfulRequests` charges the budget solely for attempts that
+  // did not succeed: guessing is capped tightly while a legitimate user is
+  // never locked out by their own successful logins.
+  const authorizePageLimiter = rateLimit({
     windowMs: 60_000,
-    limit: 3,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  const passwordAttemptLimiter = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: 10,
+    skipSuccessfulRequests: true,
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -547,7 +567,7 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
   });
 
   // GET /authorize — render password prompt with OAuth params as hidden fields
-  app.get("/authorize", authorizeLimiter, (req: Request, res: Response) => {
+  app.get("/authorize", authorizePageLimiter, (req: Request, res: Response) => {
     const params: Record<string, string> = {};
     for (const k of AUTHORIZE_PARAMS) {
       const v = req.query[k];
@@ -560,7 +580,7 @@ export function createOAuthApp(options: CreateOAuthAppOptions): CreateOAuthAppRe
   // POST /authorize — verify password, then forward to SDK authorize handler
   app.post(
     "/authorize",
-    authorizeLimiter,
+    passwordAttemptLimiter,
     formParser,
     (req: Request, res: Response, next: NextFunction) => {
       const body = req.body as Record<string, unknown>;
