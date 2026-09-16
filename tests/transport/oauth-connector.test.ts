@@ -517,6 +517,75 @@ describe("createOAuthApp (integration)", () => {
     }
   });
 
+  it("does not throttle repeated honest authorizations", async () => {
+    // One authorization costs a GET (render the prompt) plus a POST (submit
+    // it). A shared 3-per-minute budget therefore rejected the user's second
+    // attempt, which clients report as a failed authorization.
+    const ctx = await startApp();
+    try {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const { challenge } = pkcePair();
+        const params = {
+          client_id: ctx.clientId,
+          response_type: "code",
+          redirect_uri: ctx.redirectUri,
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          state: `state-${attempt}`,
+        };
+
+        const url = new URL(`${ctx.baseUrl}/authorize`);
+        for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+        const page = await fetch(url, { redirect: "manual" });
+        expect(page.status, `GET on attempt ${attempt}`).toBe(200);
+
+        const post = await fetch(`${ctx.baseUrl}/authorize`, {
+          method: "POST",
+          redirect: "manual",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ ...params, connector_password: ctx.password }),
+        });
+        expect(post.status, `POST on attempt ${attempt}`).toBe(302);
+        expect(post.headers.get("location")).toContain("code=");
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it("still throttles repeated wrong passwords", async () => {
+    const ctx = await startApp();
+    try {
+      const { challenge } = pkcePair();
+      const body = (): URLSearchParams =>
+        new URLSearchParams({
+          client_id: ctx.clientId,
+          response_type: "code",
+          redirect_uri: ctx.redirectUri,
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          state: "st",
+          connector_password: "definitely-the-wrong-password",
+        });
+
+      const statuses: number[] = [];
+      for (let i = 0; i < 12; i++) {
+        const res = await fetch(`${ctx.baseUrl}/authorize`, {
+          method: "POST",
+          redirect: "manual",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: body(),
+        });
+        statuses.push(res.status);
+      }
+
+      expect(statuses.slice(0, 10).every((s) => s === 401)).toBe(true);
+      expect(statuses.at(-1)).toBe(429);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it("rejects too-short connector password at startup", () => {
     expect(() =>
       createOAuthApp({
