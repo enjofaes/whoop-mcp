@@ -17,7 +17,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DAYS = 28;
@@ -40,9 +40,14 @@ for (const file of [".env", ".env.local"]) {
   }
 }
 
-const { authenticate, refreshAccessToken, toOAuthTokens } = await import(`${ROOT}/dist/auth/oauth.js`);
-const { loadTokens, saveTokens } = await import(`${ROOT}/dist/auth/token-store.js`);
-const { createWhoopClient } = await import(`${ROOT}/dist/api/client.js`);
+// A bare absolute path is not a valid import specifier on Windows: the ESM
+// loader reads "C:" as a URL scheme and refuses it. POSIX paths happen to
+// work, which is exactly how this ships broken if it is only run on Linux.
+// pathToFileURL is the cross-platform way to hand a path to import().
+const dist = (rel) => pathToFileURL(join(ROOT, "dist", rel)).href;
+const { authenticate, refreshAccessToken, toOAuthTokens } = await import(dist("auth/oauth.js"));
+const { loadTokens, saveTokens } = await import(dist("auth/token-store.js"));
+const { createWhoopClient } = await import(dist("api/client.js"));
 
 const clientId = process.env.WHOOP_CLIENT_ID;
 const clientSecret = process.env.WHOOP_CLIENT_SECRET;
