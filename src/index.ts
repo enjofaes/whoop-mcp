@@ -212,6 +212,9 @@ export async function main(): Promise<void> {
           res: import("node:http").ServerResponse
         ) => void)
       | undefined;
+    // Lets /mcp accept the connector's own OAuth access tokens, not just the
+    // static MCP_AUTH_TOKEN. Stays undefined when the connector is not mounted.
+    let validateBearerToken: ((token: string) => Promise<boolean>) | undefined;
     const connectorPassword = process.env.MCP_CONNECTOR_PASSWORD;
     const publicUrl = process.env.PUBLIC_URL;
     const allowedRedirectUris = process.env.ALLOWED_REDIRECT_URIS;
@@ -220,6 +223,7 @@ export async function main(): Promise<void> {
       const { createOAuthApp } = await import("./transport/oauth-connector.js");
       const { deriveJwtSecret, parseAllowedRedirectUris } =
         await import("./transport/oauth-helpers.js");
+      const { verifyToken } = await import("./transport/oauth-jwt.js");
       const jwtSecretEnv = process.env.MCP_JWT_SECRET;
       const jwtSecret = jwtSecretEnv
         ? Buffer.from(jwtSecretEnv, "utf-8")
@@ -242,6 +246,20 @@ export async function main(): Promise<void> {
         res: import("node:http").ServerResponse
       ) => void;
       oauthCloseFn = oauthApp.close;
+
+      // The connector issues its own access tokens; /mcp has to honour them,
+      // or a client finishes authorization and is then refused by the very
+      // endpoint it authorized for — which surfaces as "no tools available"
+      // rather than as an authentication failure.
+      validateBearerToken = async (token: string): Promise<boolean> => {
+        try {
+          const claims = await verifyToken(token, jwtSecret);
+          return claims.type === "access";
+        } catch {
+          return false;
+        }
+      };
+
       logger.info("oauth connector mounted", { publicUrl });
     }
 
@@ -253,6 +271,7 @@ export async function main(): Promise<void> {
       trustProxy,
       healthCheck,
       oauthHandler,
+      validateBearerToken,
     });
     await server.connect(httpResult.transport);
     httpResults.push(httpResult);
