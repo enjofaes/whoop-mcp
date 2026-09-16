@@ -48,6 +48,8 @@ const dist = (rel) => pathToFileURL(join(ROOT, "dist", rel)).href;
 const { authenticate, refreshAccessToken, toOAuthTokens } = await import(dist("auth/oauth.js"));
 const { loadTokens, saveTokens } = await import(dist("auth/token-store.js"));
 const { createWhoopClient } = await import(dist("api/client.js"));
+const { resolveRedirectUri, resolveScopes, redirectPort, WHOOP_TOKEN_URL, WHOOP_AUTH_URL } =
+  await import(dist("api/endpoints.js"));
 
 const clientId = process.env.WHOOP_CLIENT_ID;
 const clientSecret = process.env.WHOOP_CLIENT_SECRET;
@@ -56,9 +58,89 @@ if (!clientId || !clientSecret) {
   console.error("They live in .env next to package.json - the same ones the setup wizard wrote.");
   process.exit(1);
 }
+const redirectUri = resolveRedirectUri();
+const scopes = resolveScopes();
 // Interactive is fine here: this runs on your laptop, so if the stored tokens
-// have expired beyond refresh it can open a browser and re-authorise.
-const oauthConfig = { clientId, clientSecret, nonInteractive: false };
+// have expired beyond refresh it can open a browser and re-authorise. The
+// callback server follows the redirect URI rather than assuming port 3000.
+const oauthConfig = {
+  clientId,
+  clientSecret,
+  nonInteractive: false,
+  redirectUri,
+  port: redirectPort(redirectUri),
+};
+
+// ---------------------------------------------------------------------------
+// --diagnose: answer "what is actually wrong" in one run, without a browser
+// and without touching the stored tokens.
+// ---------------------------------------------------------------------------
+if (process.argv.includes("--diagnose")) {
+  const odd = [...clientId].filter((ch) => !/[0-9a-fA-F-]/.test(ch));
+  console.log("client_id     : length " + clientId.length +
+    ", starts " + clientId.slice(0, 8) + ", ends " + clientId.slice(-4));
+  console.log("                " + (odd.length
+    ? "UNEXPECTED CHARACTERS: " + JSON.stringify(odd.join("")) +
+      "  <-- a stray quote, space or comment in .env"
+    : "all characters are hex/dash, length " +
+      (clientId.length === 36 ? "36 (a normal UUID)" : clientId.length + " (a UUID is 36)")));
+  console.log("client_secret : length " + clientSecret.length + " (value not shown)");
+  console.log("redirect_uri  : " + redirectUri + "   -> callback port " + redirectPort(redirectUri));
+  console.log("scopes        : " + scopes);
+  console.log("token endpoint: " + WHOOP_TOKEN_URL);
+  console.log("\nauthorize URL this would open:");
+  console.log(WHOOP_AUTH_URL + "?response_type=code&client_id=" + encodeURIComponent(clientId) +
+    "&redirect_uri=" + encodeURIComponent(redirectUri) + "&scope=" + encodeURIComponent(scopes));
+
+  // The decisive probe. A deliberately invalid refresh_token with REAL client
+  // credentials separates the two failures that look identical from outside:
+  // if WHOOP knows the client it complains about the grant; if it does not, it
+  // complains about the client. No browser, no redirect URI involved.
+  console.log("\nProbing the token endpoint with a deliberately invalid refresh token...");
+  let probe;
+  try {
+    probe = await fetch(WHOOP_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: "this-token-is-intentionally-not-valid",
+        client_id: clientId,
+        client_secret: clientSecret,
+        scope: "offline",
+      }).toString(),
+    });
+  } catch (err) {
+    console.log("Could not reach " + WHOOP_TOKEN_URL);
+    console.log(String(err && err.message ? err.message : err));
+    console.log("\nVERDICT: no network answer, so nothing is proven about the client.");
+    console.log("         Check VPN, proxy or firewall and run --diagnose again.");
+    process.exit(1);
+  }
+  const raw = await probe.text();
+  let err = "";
+  try { err = String(JSON.parse(raw).error ?? ""); } catch { err = ""; }
+  console.log("HTTP " + probe.status + "  error=" + (err || "(none)"));
+  console.log(raw.slice(0, 300));
+  console.log("");
+  if (err === "invalid_grant") {
+    console.log("VERDICT: WHOOP KNOWS this client. Your ID and secret are correct.");
+    console.log("         So the browser failure is the redirect URI or the scopes.");
+    console.log("         Check the dashboard's registered Redirect URIs, then set");
+    console.log("         WHOOP_REDIRECT_URI (and/or WHOOP_SCOPES) in .env to match.");
+  } else if (err === "invalid_client") {
+    console.log("VERDICT: WHOOP DOES NOT KNOW this client id/secret pair.");
+    console.log("         The dashboard app and these credentials disagree --");
+    console.log("         regenerate the secret, or copy both values again.");
+  } else if (!raw.trim().startsWith("{")) {
+    console.log("VERDICT: that is not a WHOOP OAuth response -- something between you");
+    console.log("         and WHOOP answered instead (proxy, firewall or captive portal).");
+    console.log("         Nothing is proven about the client until this is cleared.");
+  } else {
+    console.log("VERDICT: unexpected. Send the two lines above back.");
+  }
+  process.exit(0);
+}
 
 console.error("Authenticating with WHOOP...");
 const accessToken = await authenticate(oauthConfig);

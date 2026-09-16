@@ -287,6 +287,22 @@ describe("refreshAccessToken", () => {
     expect(body.get("client_secret")).toBe("test-client-secret");
   });
 
+  it("sends scope=offline on refresh, which WHOOP requires", async () => {
+    // Omitting it is answered with invalid_request ("missing a required
+    // parameter ... or is otherwise malformed"), which reads like a bad
+    // refresh token and costs a debugging round in the wrong place.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(MOCK_TOKEN_RESPONSE),
+    });
+
+    await refreshAccessToken("refresh-token-abc", TEST_CONFIG);
+
+    const [, options] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = new URLSearchParams(options.body as string);
+    expect(body.get("scope")).toBe("offline");
+  });
+
   it("uses application/x-www-form-urlencoded content type", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
